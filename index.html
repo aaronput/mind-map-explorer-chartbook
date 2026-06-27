@@ -105,10 +105,14 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:13px/
 #tagFilter .pill{background:#2a3f3a;color:#a8d8c8;border-color:#355048}
 #tagFilter .pill.active{background:var(--accent-2);color:#0e1116;border-color:var(--accent-2)}
 
-/* --- timeline --- */
+/* --- timeline / date range --- */
 #timeline{padding:10px 12px;border-top:1px solid var(--border);background:var(--surface)}
 #timeline .tl-label{font-size:11px;color:var(--text-dim);display:flex;justify-content:space-between;margin-bottom:4px}
 #timeline input[type=range]{width:100%}
+.dr-input{flex:1;background:var(--surface-2);border:1px solid var(--border);color:var(--text);padding:5px 7px;border-radius:5px;font-size:11.5px;outline:none;font-family:inherit;color-scheme:dark}
+.dr-input:focus{border-color:var(--accent)}
+.dr-preset{flex:1;padding:4px 0;font-size:10.5px;text-align:center}
+.dr-preset.active{background:var(--accent);border-color:var(--accent);color:#fff}
 
 /* --- stats panel --- */
 .stat-section{margin-bottom:14px}
@@ -244,9 +248,23 @@ svg#graph:active{cursor:grabbing}
     <div class="panel" id="panel-stats" style="display:none"></div>
     <div class="panel" id="panel-quiz" style="display:none"></div>
     <div id="timeline">
-      <div class="tl-label"><span>From: <b id="tlFrom">—</b></span><span>To: <b id="tlTo">—</b></span></div>
-      <input id="tlSlider" type="range" min="0" max="100" value="0" />
-      <div style="font-size:10.5px;color:var(--text-dim);margin-top:4px">Filter: posts on or after date</div>
+      <div class="tl-label">
+        <span>Date range</span>
+        <span id="tlBadge" style="color:var(--text)">… posts</span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+        <input id="drFrom" type="date" class="dr-input" />
+        <span style="color:var(--text-dim);font-size:11px">→</span>
+        <input id="drTo" type="date" class="dr-input" />
+      </div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="btn dr-preset" data-months="1">1M</button>
+        <button class="btn dr-preset" data-months="3">3M</button>
+        <button class="btn dr-preset" data-months="6">6M</button>
+        <button class="btn dr-preset" data-months="12">1Y</button>
+        <button class="btn dr-preset" data-months="0">All</button>
+      </div>
+      <div style="font-size:10.5px;color:var(--text-dim);margin-top:6px">Narrow the range to speed up the graph. Defaults to last 3 months.</div>
     </div>
   </aside>
 
@@ -84029,6 +84047,7 @@ const state = {
   showLabels: true,
   mutedClusters: new Set(),
   fromDate: null,    // ISO yyyy-mm-dd; null = no lower bound
+  toDate: null,      // ISO yyyy-mm-dd; null = no upper bound
   hoverThread: null,
   readFilter: "all", // all | unread | want | read
   hideRead: false,
@@ -84213,6 +84232,7 @@ function filteredThreads(){
       if(p && !p.threads.includes(t.id)) return false;
     }
     if(state.fromDate && t.date && t.date < state.fromDate) return false;
+    if(state.toDate   && t.date && t.date > state.toDate)   return false;
     if(state.readFilter !== "all" && READ.get(t.id) !== state.readFilter) return false;
     if(state.hideRead && READ.get(t.id) === "read") return false;
     if(state.activeTag){
@@ -84316,8 +84336,18 @@ const gNodes = gRoot.append("g").attr("class","nodes");
 
 let allNodes=[], allLinks=[], simulation, nodeSel, linkSel;
 
+function threadsInRange(){
+  return DATA.threads.filter(t=>{
+    if(state.fromDate && t.date && t.date < state.fromDate) return false;
+    if(state.toDate   && t.date && t.date > state.toDate)   return false;
+    return true;
+  });
+}
+
 function buildGraph(){
-  const threadNodes = DATA.threads.map(t=>({
+  const inRange = threadsInRange();
+  const inRangeIds = new Set(inRange.map(t=>t.id));
+  const threadNodes = inRange.map(t=>({
     id:t.id, type:"thread", title:t.title, summary:t.summary,
     cluster:t.cluster, concepts:t.concepts, url:t.url, date:t.date,
     difficulty:t.difficulty, slug:t.slug,
@@ -84330,12 +84360,15 @@ function buildGraph(){
 
   allNodes = threadNodes.concat(conceptNodes);
 
-  const threadEdges = DATA.edges.map(e=>({source:e.source,target:e.target,weight:e.weight,kind:"thread"}));
-  // concept->thread edges
+  // Only keep thread-thread edges where BOTH endpoints survive the date filter.
+  const threadEdges = DATA.edges
+    .filter(e=>inRangeIds.has(e.source) && inRangeIds.has(e.target))
+    .map(e=>({source:e.source,target:e.target,weight:e.weight,kind:"thread"}));
+  // concept->thread edges (only for in-range threads)
   const conceptIds = new Set(conceptNodes.map(c=>c.id));
   const conceptByName = Object.fromEntries(DATA.concepts.map(c=>[c.name,c.id]));
   const conceptEdges = [];
-  DATA.threads.forEach(t=>{
+  inRange.forEach(t=>{
     t.concepts.forEach(name=>{
       const cid = conceptByName[name];
       if(cid && conceptIds.has(cid)){
@@ -84706,21 +84739,88 @@ function renderStats(){
   });
 }
 
-/* ===================== timeline slider ===================== */
-function wireTimeline(){
-  const slider = document.getElementById("tlSlider");
-  const fromEl = document.getElementById("tlFrom");
-  const toEl   = document.getElementById("tlTo");
-  if(!DATES.length){ slider.disabled=true; fromEl.textContent="—"; toEl.textContent="—"; return; }
-  slider.min = 0; slider.max = DATES.length-1; slider.value = 0;
-  fromEl.textContent = DATES[0];
-  toEl.textContent   = DATES[DATES.length-1];
-  slider.addEventListener("input",e=>{
-    const idx = parseInt(e.target.value,10);
-    state.fromDate = DATES[idx];
-    fromEl.textContent = state.fromDate;
-    renderThreadList(); applyGraphFilters(); writeHash();
+/* ===================== date-range gate (perf) ===================== */
+// Filters threads at simulation-build time, not just dimming. With 1,600+
+// Chartbook posts, running the force layout over the full set is slow —
+// narrowing the range cuts the working set dramatically.
+function rebuildGraph(){
+  if(simulation){ simulation.stop(); }
+  gLinks.selectAll("*").remove();
+  gNodes.selectAll("*").remove();
+  buildGraph();
+  applyGraphFilters();
+  updateDateBadge();
+}
+
+function updateDateBadge(){
+  const n = threadsInRange().length;
+  const total = DATA.threads.length;
+  const badge = document.getElementById("tlBadge");
+  if(badge) badge.textContent = (n===total ? `${n} posts (all)` : `${n} of ${total} posts`);
+}
+
+function shiftMonths(iso, months){
+  // iso = yyyy-mm-dd; returns yyyy-mm-dd shifted by `months`. Negative ok.
+  const [y,m,d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m-1, d));
+  dt.setUTCMonth(dt.getUTCMonth() + months);
+  return dt.toISOString().slice(0,10);
+}
+
+function setDateRange(fromIso, toIso){
+  state.fromDate = fromIso || null;
+  state.toDate   = toIso   || null;
+  const fromEl = document.getElementById("drFrom");
+  const toEl   = document.getElementById("drTo");
+  if(fromEl) fromEl.value = state.fromDate || "";
+  if(toEl)   toEl.value   = state.toDate   || "";
+  renderThreadList();
+  rebuildGraph();
+  writeHash();
+}
+
+let _drDebounce = null;
+function wireDateRange(){
+  if(!DATES.length){ return; }
+  const minDate = DATES[0], maxDate = DATES[DATES.length-1];
+  const fromEl = document.getElementById("drFrom");
+  const toEl   = document.getElementById("drTo");
+  fromEl.min = minDate; fromEl.max = maxDate;
+  toEl.min   = minDate; toEl.max   = maxDate;
+
+  // Default load: last 3 months, so the first paint is snappy.
+  if(!state.fromDate && !state.toDate){
+    state.fromDate = shiftMonths(maxDate, -3);
+    state.toDate   = maxDate;
+  }
+  fromEl.value = state.fromDate || "";
+  toEl.value   = state.toDate   || "";
+
+  const onChange = ()=>{
+    clearTimeout(_drDebounce);
+    _drDebounce = setTimeout(()=>{
+      state.fromDate = fromEl.value || null;
+      state.toDate   = toEl.value   || null;
+      renderThreadList();
+      rebuildGraph();
+      writeHash();
+    }, 220);
+  };
+  fromEl.addEventListener("change", onChange);
+  toEl.addEventListener("change", onChange);
+
+  // Preset buttons (1M / 3M / 6M / 1Y / All)
+  document.querySelectorAll(".dr-preset").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const months = parseInt(btn.dataset.months,10);
+      const from = months===0 ? null : shiftMonths(maxDate, -months);
+      const to   = months===0 ? null : maxDate;
+      document.querySelectorAll(".dr-preset").forEach(x=>x.classList.remove("active"));
+      btn.classList.add("active");
+      setDateRange(from, to);
+    });
   });
+  updateDateBadge();
 }
 
 /* ===================== URL hash state (shareable / persistent) ===================== */
@@ -84733,6 +84833,7 @@ function writeHash(){
   if(state.cluster)          parts.push("cluster="+encodeURIComponent(state.cluster));
   if(state.diff!=="all")     parts.push("diff="+encodeURIComponent(state.diff));
   if(state.fromDate)         parts.push("from="+encodeURIComponent(state.fromDate));
+  if(state.toDate)           parts.push("to="+encodeURIComponent(state.toDate));
   if(state.searchTerm)       parts.push("q="+encodeURIComponent(state.searchTerm));
   const next = parts.length ? ("#"+parts.join("&")) : "#";
   if(location.hash !== next) history.replaceState(null,"",next);
@@ -84755,9 +84856,8 @@ function readHash(){
   }
   if(params.concept){ state.activeConcept = params.concept; renderConcepts(); }
   if(params.path){    state.activePath    = params.path;    renderPaths(); }
-  if(params.from){
-    const i = DATES.indexOf(params.from);
-    if(i>=0){ document.getElementById("tlSlider").value = i; state.fromDate = params.from; document.getElementById("tlFrom").textContent = params.from; }
+  if(params.from || params.to){
+    setDateRange(params.from || null, params.to || null);
   }
   if(params.q){
     state.searchTerm = params.q;
@@ -84933,6 +85033,14 @@ document.addEventListener("keydown",(e)=>{
 });
 
 /* ===================== bootstrap ===================== */
+// Default to last 3 months BEFORE the first buildGraph() so the initial
+// simulation only sees ~150-250 nodes instead of 1,646. Hash overrides
+// later if present.
+if(DATES.length){
+  const maxDate = DATES[DATES.length-1];
+  state.fromDate = shiftMonths(maxDate, -3);
+  state.toDate   = maxDate;
+}
 buildGraph();
 renderThreadList();
 renderConcepts();
@@ -84942,7 +85050,7 @@ renderReading();
 renderTagFilter();
 renderQuiz();
 renderLegend();
-wireTimeline();
+wireDateRange();
 applyGraphFilters();
 readHash();
 window.addEventListener("hashchange", readHash);
