@@ -315,6 +315,17 @@ def assign_cluster(concepts):
     scores.sort(key=lambda x: -x[1])
     return scores[0][0] if scores[0][1] > 0 else "Other"
 
+def infer_post_type(slug):
+    """Classify slug into chartbook essay, top-links roundup, or other.
+    - 'chartbook-N-...', 'chartbook-audio-...', 'chartbook-newsletter-N' → chartbook
+    - 'top-links-N-...', 'top-link-N-...', 'adam-tooze-top-links-N' → top_links
+    - anything else (early posts, one-offs, cross-posts) → other
+    """
+    s = slug.lower()
+    if re.match(r"^chartbook", s): return "chartbook"
+    if re.match(r"^(adam-tooze-)?top-links?", s): return "top_links"
+    return "other"
+
 def infer_difficulty(concepts, slug):
     quanty = {"Fiscal Dominance","Financialization","Bond Yields","Sovereign Debt","Credit"}
     if any(c in quanty for c in concepts): return "advanced"
@@ -350,6 +361,7 @@ for idx, p in enumerate(posts):
         "concepts": concepts,
         "cluster": cluster,
         "difficulty": diff,
+        "post_type": infer_post_type(slug),
     })
     for c in concepts: concept_set[c] += 1
 
